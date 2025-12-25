@@ -314,11 +314,11 @@ local cleared_extmarks = {}
 for _, conceal in ipairs(inline_virt) do
 	local chunks, row, p1, p2 = unpack(conceal)
 
+	-- Collect overflow chunks for virtual text
+	local overflow_virt_text = {}
+
   for j, chunk in ipairs(chunks) do
     local c, hl_group = unpack(chunk)
-		if p1+j == p2 and j < #chunks then
-			hl_group = "DiffDelete"
-		end
 
 		if p1+j <= p2 then
 			@cleared_extmarks
@@ -331,8 +331,20 @@ for _, conceal in ipairs(inline_virt) do
 				hl_group = hl_group,
 				strict = false,
 			})
+		elseif c ~= "" then
+			-- Overflow: rendered formula is longer than source text
+			table.insert(overflow_virt_text, { c, hl_group })
 		end
   end
+
+	-- Add overflow as virtual text at the end of the formula
+	if #overflow_virt_text > 0 then
+		@cleared_extmarks
+		vim.api.nvim_buf_set_extmark(buf, mult_virt_ns[buf], row, p2, {
+			virt_text = overflow_virt_text,
+			virt_text_pos = "inline",
+		})
+	end
 end
 
 @place_virt_lines_above_and_below+=
