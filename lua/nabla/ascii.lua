@@ -1405,7 +1405,7 @@ function put_if_only_sub(g, sub, sup)
   		local frac_exp
   		if #frac_exps == 1  then
   			local exp = frac_exps[1]
-  			if exp.kind == "funexp" and exp.sym == "frac" then
+			if exp.kind == "funexp" and (exp.sym == "frac" or exp.sym == "dfrac" or exp.sym == "tfrac") then
   				assert(#exp.args == 2, "frac must have 2 arguments")
   				local numerator = exp.args[1].exps
   				local denominator = exp.args[2].exps
@@ -1511,7 +1511,7 @@ function put_if_only_sup(g, sub, sup)
   		local frac_exp
   		if #frac_exps == 1  then
   			local exp = frac_exps[1]
-  			if exp.kind == "funexp" and exp.sym == "frac" then
+			if exp.kind == "funexp" and (exp.sym == "frac" or exp.sym == "dfrac" or exp.sym == "tfrac") then
   				assert(#exp.args == 2, "frac must have 2 arguments")
   				local numerator = exp.args[1].exps
   				local denominator = exp.args[2].exps
@@ -1583,7 +1583,7 @@ function to_ascii(explist, exp_i)
 
     elseif exp.kind == "funexp" then
     	local name = exp.sym
-    	if name == "frac" then
+	if name == "frac" or name == "dfrac" or name == "tfrac" then
     		local leftgrid = to_ascii({explist[exp_i+1]}, 1)
     		local rightgrid = to_ascii({explist[exp_i+2]}, 1)
     		exp_i = exp_i + 2
