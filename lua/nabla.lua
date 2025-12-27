@@ -1,728 +1,573 @@
--- Generated using ntangle.nvim
--- local parser = require("nabla.parser")
+-- Efficient LaTeX rendering for Neovim using virtual text
+-- Architecture inspired by render-markdown.nvim:
+-- - Viewport-based parsing (only parse visible content)
+-- - Extmark caching with show/hide pattern
+-- - Debounced updates
+-- - Anti-conceal for cursor proximity
+
 local parser = require("nabla.latex")
-
 local ascii = require("nabla.ascii")
-
 local ts_utils = vim.treesitter
-local utils=require"nabla.utils"
+local utils = require("nabla.utils")
+local Manager = require("nabla.core.manager").Manager
+local Extmark = require("nabla.core.ui").Extmark
 
-local autogen_autocmd = {}
-local autogen_flag = false
-
-local virt_enabled = {}
-
+-- Module state
+local M = {}
+local ns_id = vim.api.nvim_create_namespace("nabla.nvim")
+local manager = nil
 local saved_conceallevel = {}
 local saved_concealcursor = {}
 
-local mult_virt_ns = {}
+-- Configuration
+local config = {
+  debounce = 100,
+  anti_conceal = {
+    enabled = true,
+    above = 0,
+    below = 0,
+  },
+}
 
-local saved_wrapsettings = {}
-
-
-local colorize
-
-local colorize_virt
-
-local enable_virt
-
-local disable_virt
-
-local toggle_virt
-
-local is_virt_enabled
-
-function colorize(g, first_dx, dx, dy, ns_id, drawing, px, py, buf)
-  if g.t == "num" then
-    local off
-    if dy == 0 then off = first_dx else off = dx end
-
-    local sx = vim.str_byteindex(drawing[dy+1], off)
-    local se = vim.str_byteindex(drawing[dy+1], off+g.w)
-
-    local of
-    if dy == 0 then of = px else of = 0 end
-    vim.api.nvim_buf_add_highlight(buf, ns_id, "@number", py+dy, of+sx,of+se)
-  end
-
-  if g.t == "sym" then
-    local off
-    if dy == 0 then off = first_dx else off = dx end
-
-    local sx = vim.str_byteindex(drawing[dy+1], off)
-    local se = vim.str_byteindex(drawing[dy+1], off+g.w)
-
-    if string.match(g.content[1], "^%a") then
-      local of
-      if dy == 0 then of = px else of = 0 end
-      vim.api.nvim_buf_add_highlight(buf, ns_id, "@string", dy+py, of+sx, of+se)
-
-    elseif string.match(g.content[1], "^%d") then
-      local of
-      if dy == 0 then of = px else of = 0 end
-      vim.api.nvim_buf_add_highlight(buf, ns_id, "@number", dy+py, of+sx, of+se)
-
-    else
-      for y=1,g.h do
-        local off
-        if y+dy == 1 then off = first_dx else off = dx end
-
-        local sx = vim.str_byteindex(drawing[dy+y], off)
-        local se = vim.str_byteindex(drawing[dy+y], off+g.w)
-        local of
-        if y+dy == 1 then of = px else of = 0 end
-        vim.api.nvim_buf_add_highlight(buf, ns_id, "@operator", dy+py+y-1, of+sx, of+se)
-      end
-    end
-  end
-
-  if g.t == "op" then
-    for y=1,g.h do
-      local off
-      if y+dy == 1 then off = first_dx else off = dx end
-
-      local sx = vim.str_byteindex(drawing[dy+y], off)
-      local se = vim.str_byteindex(drawing[dy+y], off+g.w)
-
-      local of
-      if dy+y == 1 then of = px else of = 0 end
-      vim.api.nvim_buf_add_highlight(buf, ns_id, "@operator", dy+py+y-1, of+sx, of+se)
-    end
-  end
-  if g.t == "par" then
-    for y=1,g.h do
-      local off
-      if y+dy == 1 then off = first_dx else off = dx end
-
-      local sx = vim.str_byteindex(drawing[dy+y], off)
-      local se = vim.str_byteindex(drawing[dy+y], off+g.w)
-
-      local of
-      if y+dy == 1 then of = px else of = 0 end
-      vim.api.nvim_buf_add_highlight(buf, ns_id, "@operator", dy+py+y-1, of+sx, of+se)
-    end
-  end
-
-  if g.t == "var" then
-    local off
-    if dy == 0 then off = first_dx else off = dx end
-
-    local sx = vim.str_byteindex(drawing[dy+1], off)
-    local se = vim.str_byteindex(drawing[dy+1], off+g.w)
-
-    local of
-    if dy == 0 then of = px else of = 0 end
-    vim.api.nvim_buf_add_highlight(buf, ns_id, "@string", dy+py, of+sx, of+se)
-  end
-
-  for _, child in ipairs(g.children) do
-    colorize(child[1], child[2]+first_dx, child[2]+dx, child[3]+dy, ns_id, drawing, px, py, buf)
-  end
-
+---Setup nabla with optional configuration
+---@param opts table|nil
+function M.setup(opts)
+  config = vim.tbl_deep_extend('force', config, opts or {})
 end
 
-function colorize_virt(g, virt_lines, first_dx, dx, dy)
+-- Colorize virtual text based on AST node type
+local function colorize_virt(g, virt_lines, first_dx, dx, dy)
   if g.t == "num" then
-    local off
-    if dy == 0 then off = first_dx else off = dx end
-
-    for i=1,g.w do
-      virt_lines[dy+1][off+i][2] = "@number"
+    local off = dy == 0 and first_dx or dx
+    for i = 1, g.w do
+      if virt_lines[dy + 1] and virt_lines[dy + 1][off + i] then
+        virt_lines[dy + 1][off + i][2] = "@number"
+      end
     end
   end
 
   if g.t == "sym" then
-    local off
-    if dy == 0 then off = first_dx else off = dx end
-
-    if string.match(g.content[1], "^%a") then
-      for i=1,g.w do
-        virt_lines[dy+1][off+i][2] = "@string"
-      end
-
-    elseif string.match(g.content[1], "^%d") then
-      for i=1,g.w do
-        virt_lines[dy+1][off+i][2] = "@number"
-      end
-
-
-    else
-      for y=1,g.h do
-        local off
-        if y+dy == 1 then off = first_dx else off = dx end
-
-        for i=1,g.w do
-          virt_lines[dy+y][off+i][2] = "@operator"
+    local off = dy == 0 and first_dx or dx
+    if g.content and g.content[1] and string.match(g.content[1], "^%a") then
+      for i = 1, g.w do
+        if virt_lines[dy + 1] and virt_lines[dy + 1][off + i] then
+          virt_lines[dy + 1][off + i][2] = "@string"
         end
-
+      end
+    elseif g.content and g.content[1] and string.match(g.content[1], "^%d") then
+      for i = 1, g.w do
+        if virt_lines[dy + 1] and virt_lines[dy + 1][off + i] then
+          virt_lines[dy + 1][off + i][2] = "@number"
+        end
+      end
+    else
+      for y = 1, g.h do
+        local off2 = (y + dy == 1) and first_dx or dx
+        for i = 1, g.w do
+          if virt_lines[dy + y] and virt_lines[dy + y][off2 + i] then
+            virt_lines[dy + y][off2 + i][2] = "@operator"
+          end
+        end
       end
     end
   end
 
-  if g.t == "op" then
-    for y=1,g.h do
-      local off
-      if y+dy == 1 then off = first_dx else off = dx end
-
-      for i=1,g.w do
-        virt_lines[dy+y][off+i][2] = "@operator"
-      end
-    end
-  end
-  if g.t == "par" then
-    for y=1,g.h do
-      local off
-      if y+dy == 1 then off = first_dx else off = dx end
-
-      for i=1,g.w do
-        virt_lines[dy+y][off+i][2] = "@operator"
+  if g.t == "op" or g.t == "par" then
+    for y = 1, g.h do
+      local off = (y + dy == 1) and first_dx or dx
+      for i = 1, g.w do
+        if virt_lines[dy + y] and virt_lines[dy + y][off + i] then
+          virt_lines[dy + y][off + i][2] = "@operator"
+        end
       end
     end
   end
 
   if g.t == "var" then
-    local off
-    if dy == 0 then off = first_dx else off = dx end
-
-    for i=1,g.w do
-      virt_lines[dy+1][off+i][2] = "@string"
+    local off = dy == 0 and first_dx or dx
+    for i = 1, g.w do
+      if virt_lines[dy + 1] and virt_lines[dy + 1][off + i] then
+        virt_lines[dy + 1][off + i][2] = "@string"
+      end
     end
   end
 
-  for _, child in ipairs(g.children) do
-    colorize_virt(child[1], virt_lines, child[2]+first_dx, child[2]+dx, child[3]+dy)
+  for _, child in ipairs(g.children or {}) do
+    colorize_virt(child[1], virt_lines, child[2] + first_dx, child[2] + dx, child[3] + dy)
   end
-
 end
 
-local function gen_drawing(lines)
-  local parser = require("nabla.latex")
-  local ascii = require("nabla.ascii")
-  local line = table.concat(lines, " ")
-
-  local success, exp = pcall(parser.parse_all, line)
-
-
-  if success and exp then
-    local succ, g = pcall(ascii.to_ascii, {exp}, 1)
-    if not succ then
-      print(g)
-      return 0
-    end
-
-    if not g or g == "" then
-      vim.api.nvim_echo({{"Empty expression detected. Please use the $...$ syntax.", "ErrorMsg"}}, false, {})
-      return 0
-    end
-
-    local drawing = {}
-    for row in vim.gsplit(tostring(g), "\n") do
-    	table.insert(drawing, row)
-    end
-    if whitespace then
-    	for i=1,#drawing do
-    		drawing[i] = whitespace .. drawing[i]
-    	end
-    end
-
-
-
-    return drawing
-  end
-  return 0
-end
-
-local function popup(overrides)
-  if not utils.in_mathzone() then
-    return
-  end
-
-  local math_node = utils.in_mathzone()
-
-  local srow, scol, erow, ecol = ts_utils.get_node_range(math_node)
-
-  local lines = vim.api.nvim_buf_get_text(0, srow, scol, erow, ecol, {})
-  line = table.concat(lines, " ")
-  line = line:gsub("%$", "")
+-- Parse a single formula and generate ASCII representation
+local function parse_formula(text)
+  local line = text:gsub("%$", "")
   line = line:gsub("\\%[", "")
   line = line:gsub("\\%]", "")
   line = line:gsub("^\\%(", "")
   line = line:gsub("\\%)$", "")
   line = vim.trim(line)
+
   if line == "" then
-      return
+    return nil, nil
   end
-
-
 
   local success, exp = pcall(parser.parse_all, line)
-
-
-  if success and exp then
-    local succ, g = pcall(ascii.to_ascii, {exp}, 1)
-    if not succ then
-      print(g)
-      return 0
-    end
-
-    if not g or g == "" then
-      vim.api.nvim_echo({{"Empty expression detected. Please use the $...$ syntax.", "ErrorMsg"}}, false, {})
-      return 0
-    end
-
-    local drawing = {}
-    for row in vim.gsplit(tostring(g), "\n") do
-    	table.insert(drawing, row)
-    end
-    if whitespace then
-    	for i=1,#drawing do
-    		drawing[i] = whitespace .. drawing[i]
-    	end
-    end
-
-
-
-
-    local floating_default_options = {
-      wrap = false,
-      focusable = false,
-      border = 'single',
-    	stylize_markdown=false
-    }
-    local bufnr_float, winr_float = vim.lsp.util.open_floating_preview(drawing, 'markdown', vim.tbl_deep_extend('force', floating_default_options, overrides or {}))
-    local ns_id = vim.api.nvim_create_namespace("")
-    colorize(g, 0, 0, 0, ns_id, drawing, 0, 0, bufnr_float)
-
-
-  else
-    print(exp)
+  if not success or not exp then
+    return nil, nil
   end
 
+  local succ, g = pcall(ascii.to_ascii, { exp }, 1)
+  if not succ or not g or g == "" then
+    return nil, nil
+  end
+
+  local drawing = {}
+  for row in vim.gsplit(tostring(g), "\n") do
+    table.insert(drawing, row)
+  end
+
+  return drawing, g
 end
 
-function enable_virt(opts)
-  local buf = vim.api.nvim_get_current_buf()
-  virt_enabled[buf] = true
+-- Convert drawing to virtual text format with colorization
+local function drawing_to_virt(drawing, g)
+  local drawing_virt = {}
+  for j = 1, #drawing do
+    local len = vim.str_utfindex(drawing[j])
+    local new_virt_line = {}
+    for i = 1, len do
+      local a = vim.str_byteindex(drawing[j], i - 1)
+      local b = vim.str_byteindex(drawing[j], i)
+      local c = drawing[j]:sub(a + 1, b)
+      table.insert(new_virt_line, { c, "Normal" })
+    end
+    table.insert(drawing_virt, new_virt_line)
+  end
+  colorize_virt(g, drawing_virt, 0, 0, 0)
+  return drawing_virt
+end
 
-	local inline_virt = {}
-	local virt_lines_above = {}
-	local virt_lines_below = {}
+-- Main render function called by the updater
+-- Returns extmark definitions for viewport
+local function render_formulas(buf, top, bottom, ctx)
+  local marks = {}
+  local formula_nodes = utils.get_mathzones_in_range(buf, top, bottom)
 
-	if mult_virt_ns[buf] == nil then
-			mult_virt_ns[buf] = vim.api.nvim_create_namespace("nabla.nvim")
-	end
+  -- Track visual offset per row caused by concealed formulas
+  -- Key: row number, Value: cumulative offset (positive = chars saved)
+  local row_offsets = {}
+  
+  -- Collect all virtual lines per row (to combine multiple formulas on same row)
+  -- Key: row number, Value: { above = {lines...}, below = {lines...} }
+  local row_virt_lines = {}
 
-	local prev_row = -1
-	local prev_diff = 0
+  for _, node in ipairs(formula_nodes) do
+    local srow, scol, erow, ecol = ts_utils.get_node_range(node)
 
-	local next_prev_row
-	local next_prev_diff
+    -- Skip if outside viewport
+    if srow > bottom or erow < top then
+      goto continue
+    end
 
-	local formula_nodes = utils.get_all_mathzones(opts)
-	local formulas_loc = {}
-	for _, node in ipairs(formula_nodes) do
-	  local srow, scol, erow, ecol = ts_utils.get_node_range(node)
-	  table.insert(formulas_loc, {srow, scol, erow, ecol})
-	end
+    local succ, texts = pcall(vim.api.nvim_buf_get_text, buf, srow, scol, erow, ecol, {})
+    if not succ then
+      goto continue
+    end
 
-  local conceal_padding = {}
-  for _, loc in ipairs(formulas_loc) do
-    local srow, scol, erow, ecol = unpack(loc)
-  	local succ, texts = pcall(vim.api.nvim_buf_get_text, buf, srow, scol, erow, ecol, {})
-  	if succ then
-  		local line = table.concat(texts, " ")
-  		line = line:gsub("%$", "")
-  		line = line:gsub("\\%[", "")
-  		line = line:gsub("\\%]", "")
-  		line = line:gsub("^\\%(", "")
-  		line = line:gsub("\\%)$", "")
-  		line = vim.trim(line)
-  		local success, exp = pcall(parser.parse_all, line)
+    local text = table.concat(texts, " ")
+    local drawing, g = parse_formula(text)
+    if not drawing or not g then
+      goto continue
+    end
 
+    local drawing_virt = drawing_to_virt(drawing, g)
+    
+    -- Use grid width for the rendered formula width
+    local inline_width = g.w
 
-  		if success and exp then
-  			local succ, g = pcall(ascii.to_ascii, {exp}, 1)
-  			if not succ then
-  			  print(g)
-  			  return 0
-  			end
+    -- Original source width
+    local source_width = ecol - scol
+    
+    -- Calculate visual column accounting for previous formulas on this row
+    local prev_offset = row_offsets[srow] or 0
+    local visual_col = scol - prev_offset
+    
+    -- Update offset for next formula on this row
+    -- Offset increases by (source_width - rendered_width)
+    row_offsets[srow] = prev_offset + (source_width - inline_width)
 
-  			if not g or g == "" then
-  			  vim.api.nvim_echo({{"Empty expression detected. Please use the $...$ syntax.", "ErrorMsg"}}, false, {})
-  			  return 0
-  			end
+    -- Find the longest line for conceal placement
+    local concealline = srow
+    local longest = -1
+    for r = 1, erow - srow + 1 do
+      local p1, p2
+      if srow == erow then
+        p1, p2 = scol, ecol
+      elseif r == 1 then
+        p1 = scol
+        p2 = #(vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or "")
+      elseif r == #drawing_virt then
+        p1, p2 = 0, ecol
+      else
+        p1 = 0
+        p2 = #(vim.api.nvim_buf_get_lines(buf, srow + (r - 1), srow + r, true)[1] or "")
+      end
+      if p2 - p1 > longest then
+        concealline = srow + (r - 1)
+        longest = p2 - p1
+      end
+    end
 
-  			local drawing = {}
-  			for row in vim.gsplit(tostring(g), "\n") do
-  				table.insert(drawing, row)
-  			end
-  			if whitespace then
-  				for i=1,#drawing do
-  					drawing[i] = whitespace .. drawing[i]
-  				end
-  			end
+    -- Initialize row_virt_lines for this concealline if needed
+    if not row_virt_lines[concealline] then
+      row_virt_lines[concealline] = { above = {}, below = {} }
+    end
 
+    -- Collect virtual lines above and below
+    for r, virt_line in ipairs(drawing_virt) do
+      -- relrow: negative = above inline, 0 = inline, positive = below inline
+      local relrow = r - g.my - 1
 
+      local p1, p2
+      if srow == erow then
+        p1, p2 = scol, ecol
+      elseif r == 1 then
+        p1 = scol
+        p2 = #(vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or "")
+      elseif r == #drawing_virt then
+        p1, p2 = 0, ecol
+      else
+        p1 = 0
+        p2 = #(vim.api.nvim_buf_get_lines(buf, srow + (r - 1), srow + r, true)[1] or "")
+      end
 
-  			if not conceal_padding[srow] then
-  			  -- account for treesitter capture conceals
-  			  conceal_padding[srow] = vim.iter(vim.gsplit(vim.api.nvim_buf_get_lines(0, srow, srow + 1, false)[1], ''))
-  			      :fold({}, function(acc, _)
-  			        local conceal_cap = vim.iter(vim.treesitter.get_captures_at_pos(0, srow, #acc))
-  			            :filter(function(v)
-  			              return v.metadata.conceal
-  			            end):next()
-  			        acc[#acc + 1] = (#acc == 0 and 0 or acc[#acc]) + 1 - (conceal_cap and vim.fn.strutf16len(conceal_cap.metadata.conceal) or 1)
-  			        return acc
-  			      end)
+      if relrow == 0 then
+        -- Inline replacement
+        local chunks = {}
+        local margin_left = 0
+        local margin_right = p2 - #virt_line - p1
 
-  			  local marks = vim.iter(vim.api.nvim_buf_get_extmarks(0, -1, { srow, 0 }, { srow, -1 }, { details = true, }))
-  			  local last_stat = marks:filter(function(v) return v[4].virt_text and v[4].virt_text_pos == "inline" end)
-  			    :fold({0, 0}, function (stat, mark)
-  			        if stat[1] >= mark[3] then
-  			          return { stat[1], stat[2] + vim.iter(mark[4].virt_text):fold(0, function(len, v)
-  			            -- the third term accounts for replacement of a character with virt_text (1) vs addition of string (0)
-  			            return len + vim.fn.strutf16len(v[1]) - 1
-  			          end) }
-  			        end
-  			      for i = stat[1] + 1, mark[3] + 1 do
-  			        conceal_padding[srow][i] = conceal_padding[srow][i] - stat[2]
-  			      end
-  			    return {mark[3] + 1,
-  			      stat[2] + vim.iter(mark[4].virt_text):fold(0, function (len, v)
-  			        return len + vim.fn.strutf16len(v[1]) - 1
-  			      end)}
-  			    end)
-  			  for i = last_stat[1] + 1, #conceal_padding[srow] do
-  			    conceal_padding[srow][i] = conceal_padding[srow][i] - last_stat[2]
-  			  end
-  			end
+        for _ = 1, margin_left do
+          table.insert(chunks, { " ", "NonText" })
+        end
+        vim.list_extend(chunks, virt_line)
+        for _ = 1, math.max(0, margin_right) do
+          table.insert(chunks, { "", "NonText" })
+        end
 
-  			local drawing_virt = {}
+        -- Create conceal extmarks for each character
+        for j, chunk in ipairs(chunks) do
+          local c, hl_group = unpack(chunk)
+          if p1 + j <= p2 then
+            local mark = Extmark.new(concealline, p1 + j - 1, {
+              end_row = concealline,
+              end_col = p1 + j,
+              conceal = c,
+              hl_group = hl_group,
+              strict = false,
+            }, true) -- conceal = true for anti-conceal
+            marks[#marks + 1] = mark
+          elseif c ~= "" then
+            -- Overflow - add as inline virtual text
+            local overflow = {}
+            for k = j, #chunks do
+              if chunks[k][1] ~= "" then
+                table.insert(overflow, chunks[k])
+              end
+            end
+            if #overflow > 0 then
+              local mark = Extmark.new(concealline, p2, {
+                virt_text = overflow,
+                virt_text_pos = "inline",
+              }, true)
+              marks[#marks + 1] = mark
+            end
+            break
+          end
+        end
+      elseif relrow < 0 then
+        -- Virtual line above - add padding for alignment
+        local padded_line = {}
+        for _ = 1, visual_col do
+          table.insert(padded_line, { " ", "Normal" })
+        end
+        vim.list_extend(padded_line, virt_line)
+        
+        -- Merge into existing line at this position or add new
+        local above_idx = -relrow  -- Convert to positive index (1 = closest to anchor)
+        local existing = row_virt_lines[concealline].above[above_idx]
+        if existing then
+          -- Extend the existing line with padding and new content
+          local pad_needed = visual_col - #existing
+          for _ = 1, pad_needed do
+            table.insert(existing, { " ", "Normal" })
+          end
+          vim.list_extend(existing, virt_line)
+        else
+          row_virt_lines[concealline].above[above_idx] = padded_line
+        end
+      else
+        -- Virtual line below - add padding for alignment
+        local padded_line = {}
+        for _ = 1, visual_col do
+          table.insert(padded_line, { " ", "Normal" })
+        end
+        vim.list_extend(padded_line, virt_line)
+        
+        -- Merge into existing line at this position or add new
+        local existing = row_virt_lines[concealline].below[relrow]
+        if existing then
+          local pad_needed = visual_col - #existing
+          for _ = 1, pad_needed do
+            table.insert(existing, { " ", "Normal" })
+          end
+          vim.list_extend(existing, virt_line)
+        else
+          row_virt_lines[concealline].below[relrow] = padded_line
+        end
+      end
+    end
 
-  			for j=1,#drawing do
-  			  local len = vim.str_utfindex(drawing[j])
-  			  local new_virt_line = {}
-  			  for i=1,len do
-  			    local a = vim.str_byteindex(drawing[j], i-1)
-  			    local b = vim.str_byteindex(drawing[j], i)
+    -- Conceal other lines of multi-line formulas
+    for r = 1, erow - srow + 1 do
+      local row = srow + (r - 1)
+      if row ~= concealline then
+        local p1, p2
+        if srow == erow then
+          p1, p2 = scol, ecol
+        elseif r == 1 then
+          p1 = scol
+          p2 = #(vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or "")
+        elseif r == #drawing_virt then
+          p1, p2 = 0, ecol
+        else
+          p1 = 0
+          p2 = #(vim.api.nvim_buf_get_lines(buf, row, row + 1, true)[1] or "")
+        end
 
-  			    local c = drawing[j]:sub(a+1, b)
-  			    table.insert(new_virt_line, { c, "Normal" })
-  			  end
+        for j = 1, p2 - p1 do
+          local mark = Extmark.new(row, p1 + j - 1, {
+            end_row = row,
+            end_col = p1 + j,
+            conceal = " ",
+            strict = false,
+          }, true)
+          marks[#marks + 1] = mark
+        end
+      end
+    end
 
-  			  table.insert(drawing_virt, new_virt_line)
-  			end
-
-  			colorize_virt(g, drawing_virt, 0, 0, 0)
-
-
-  			-- Pick the longest line in multiline formulas and hope that
-  			-- everything fits horizontally
-  			local concealline = srow
-  			local longest = -1
-  			for r=1,erow-srow+1 do
-  				local p1, p2
-  				if srow == erow then
-  					p1 = scol
-  					p2 = ecol
-  				elseif r == 1 then
-  					p1 = scol
-  					p2 = #vim.api.nvim_buf_get_lines(buf, srow, srow+1, true)[1]
-  				elseif r == #drawing_virt then
-  					p1 = 0
-  					p2 = ecol
-  				else
-  					p1 = 0
-  					p2 = #vim.api.nvim_buf_get_lines(buf, srow+(r-1), srow+(r-1)+1, true)[1]
-  				end
-
-  				if p2 - p1 > longest then
-  					concealline = srow+(r-1)
-  					longest = p2 - p1
-  				end
-  			end
-
-  			for r, virt_line in ipairs(drawing_virt) do
-  				if srow ~= prev_row then
-  					prev_row = -1
-  					prev_diff = 0
-  				end
-
-  				local relrow = r - g.my - 1
-
-  				if srow == 0 then
-  					relrow = r-1
-  				end
-
-  				local p1, p2
-  				if srow == erow then
-  					p1 = scol
-  					p2 = ecol
-  				elseif r == 1 then
-  					p1 = scol
-  					p2 = #vim.api.nvim_buf_get_lines(buf, srow, srow+1, true)[1]
-  				elseif r == #drawing_virt then
-  					p1 = 0
-  					p2 = ecol
-  				else
-  					p1 = 0
-  					p2 = #vim.api.nvim_buf_get_lines(buf, srow+(r-1), srow+(r-1)+1, true)[1]
-  				end
-
-
-
-  				local desired_col = p1
-  				if relrow == 0 then
-  					local chunks = {}
-  					local margin_left = desired_col - p1
-  					local margin_right = p2 - #virt_line - desired_col
-
-  					for i=1,margin_left do
-  						table.insert(chunks, {" ", "NonText"})
-  					end
-
-  					vim.list_extend(chunks, virt_line)
-
-  					for i=1,margin_right do
-  						table.insert(chunks, {"", "NonText"})
-  					end
-  					next_prev_row = srow
-  					next_prev_diff = margin_right + prev_diff
-
-  					table.insert(inline_virt, { chunks, concealline, p1, p2 })
-
-  				else 
-  					local vline, virt_lines
-  					if relrow < 0 then
-  						virt_lines = virt_lines_above[concealline] or {}
-  						vline = virt_lines[-relrow] or {}
-  					else
-  						virt_lines = virt_lines_below[concealline] or {}
-  						vline = virt_lines[relrow] or {}
-  					end
-
-  					local col = #vline
-  					local padding = desired_col - col - conceal_padding[srow][desired_col + 1]
-  					if prev_row == srow then
-  						padding = padding - prev_diff
-  					end
-  					for i=1,padding do
-  						table.insert(vline, { " ", "Normal" })
-  					end
-
-  					vim.list_extend(vline, virt_line)
-
-  					if relrow < 0 then
-  						virt_lines[-relrow] = vline
-  						virt_lines_above[concealline] = virt_lines
-  					else
-  						virt_lines[relrow] = vline
-  						virt_lines_below[concealline] = virt_lines
-  					end
-
-  				end
-
-  			end
-  			if next_prev_row then
-  				prev_diff = next_prev_diff
-  				prev_row = next_prev_row
-  			end
-
-
-  			for r=1,erow-srow+1 do
-  				local p1, p2
-  				if srow == erow then
-  					p1 = scol
-  					p2 = ecol
-  				elseif r == 1 then
-  					p1 = scol
-  					p2 = #vim.api.nvim_buf_get_lines(buf, srow, srow+1, true)[1]
-  				elseif r == #drawing_virt then
-  					p1 = 0
-  					p2 = ecol
-  				else
-  					p1 = 0
-  					p2 = #vim.api.nvim_buf_get_lines(buf, srow+(r-1), srow+(r-1)+1, true)[1]
-  				end
-
-  				if srow+(r-1) ~= concealline then
-  					local chunks = {}
-  					for i=1,p2-p1 do
-  						table.insert(chunks, {" ", "NonText"})
-  					end
-
-  					table.insert(inline_virt, { chunks, srow+(r-1), p1, p2 })
-  				end
-  			end
-
-
-  		else
-  			if opts and opts.silent then
-  			else
-  				print(exp)
-  			end
-  		end
-  	end
+    ::continue::
   end
 
-  -- @place_drawings_above_lines
-	local cleared_extmarks = {}
-	for _, conceal in ipairs(inline_virt) do
-		local chunks, row, p1, p2 = unpack(conceal)
+  -- Create virtual line extmarks from collected row_virt_lines
+  for row, vlines in pairs(row_virt_lines) do
+    -- Process above lines (need to reverse: index 1 is closest to anchor, but we want furthest first)
+    if next(vlines.above) then
+      local above_list = {}
+      -- Find max index
+      local max_idx = 0
+      for idx, _ in pairs(vlines.above) do
+        if idx > max_idx then max_idx = idx end
+      end
+      -- Build list from furthest to closest
+      for i = max_idx, 1, -1 do
+        if vlines.above[i] then
+          table.insert(above_list, vlines.above[i])
+        end
+      end
+      if #above_list > 0 then
+        local mark = Extmark.new(row, 0, {
+          virt_lines = above_list,
+          virt_lines_above = true,
+        }, false)
+        marks[#marks + 1] = mark
+      end
+    end
+    
+    -- Process below lines
+    if next(vlines.below) then
+      local below_list = {}
+      -- Find max index
+      local max_idx = 0
+      for idx, _ in pairs(vlines.below) do
+        if idx > max_idx then max_idx = idx end
+      end
+      -- Build list in order
+      for i = 1, max_idx do
+        if vlines.below[i] then
+          table.insert(below_list, vlines.below[i])
+        end
+      end
+      if #below_list > 0 then
+        local mark = Extmark.new(row, 0, {
+          virt_lines = below_list,
+          virt_lines_above = false,
+        }, false)
+        marks[#marks + 1] = mark
+      end
+    end
+  end
 
-		-- Collect overflow chunks for virtual text
-		local overflow_virt_text = {}
+  return marks
+end
 
-	  for j, chunk in ipairs(chunks) do
-	    local c, hl_group = unpack(chunk)
-
-			if p1+j <= p2 then
-				if cleared_extmarks[row] == nil then
-				  vim.api.nvim_buf_clear_namespace(buf, mult_virt_ns[buf], row, row + 1)
-				  cleared_extmarks[row] = true
-				end
-
-				vim.api.nvim_buf_set_extmark(buf, mult_virt_ns[buf], row, p1+j-1, {
-					-- virt_text = {{ c, hl_group }},
-					end_row = row,
-					end_col = p1+j,
-					-- virt_text_pos = "overlay",
-					conceal = c,
-					hl_group = hl_group,
-					strict = false,
-				})
-			elseif c ~= "" then
-				-- Overflow: rendered formula is longer than source text
-				table.insert(overflow_virt_text, { c, hl_group })
-			end
-	  end
-
-		-- Add overflow as virtual text at the end of the formula
-		if #overflow_virt_text > 0 then
-			if cleared_extmarks[row] == nil then
-			  vim.api.nvim_buf_clear_namespace(buf, mult_virt_ns[buf], row, row + 1)
-			  cleared_extmarks[row] = true
-			end
-
-			vim.api.nvim_buf_set_extmark(buf, mult_virt_ns[buf], row, p2, {
-				virt_text = overflow_virt_text,
-				virt_text_pos = "inline",
-			})
-		end
-	end
-
-	for row, virt_lines in pairs(virt_lines_above) do
-		local virt_lines_reversed = {}
-		for _, line in ipairs(virt_lines) do
-			table.insert(virt_lines_reversed, 1, line)
-		end
-
-		if #virt_lines_reversed > 0 then
-			if cleared_extmarks[row] == nil then
-			  vim.api.nvim_buf_clear_namespace(buf, mult_virt_ns[buf], row, row + 1)
-			  cleared_extmarks[row] = true
-			end
-
-			vim.api.nvim_buf_set_extmark(buf, mult_virt_ns[buf], row, 0, {
-				virt_lines = virt_lines_reversed,
-				virt_lines_above = true,
-			})
-		end
-	end
-
-	for row, virt_lines in pairs(virt_lines_below) do
-		if #virt_lines > 0 then
-			if cleared_extmarks[row] == nil then
-			  vim.api.nvim_buf_clear_namespace(buf, mult_virt_ns[buf], row, row + 1)
-			  cleared_extmarks[row] = true
-			end
-
-			vim.api.nvim_buf_set_extmark(buf, mult_virt_ns[buf], row, 0, {
-				virt_lines = virt_lines,
-			})
-		end
-	end
-
+-- Enable virtual text rendering for current buffer
+function M.enable_virt(opts)
+  opts = opts or {}
+  local buf = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
+
+  -- Initialize manager
+  if not manager then
+    manager = Manager.get(ns_id, config, render_formulas)
+  end
+
+  -- Attach to buffer
+  manager:attach(buf)
+
+  -- Save and set conceal settings
   saved_conceallevel[win] = vim.wo[win].conceallevel
   saved_concealcursor[win] = vim.wo[win].concealcursor
   vim.wo[win].conceallevel = 2
   vim.wo[win].concealcursor = ""
 
-	local win = vim.api.nvim_get_current_win()
-	saved_wrapsettings[win] = vim.wo[win].wrap
-	-- vim.wo[win].wrap = false
-
-	if opts and opts.autogen then
-		autogen_autocmd[buf] = vim.api.nvim_create_autocmd({"InsertLeave", "TextChanged"}, {
-			buffer = buf,
-			desc = "nabla.nvim: Regenerates virt_lines automatically when the user exists insert mode",
-			callback = function()
-				autogen_flag = true
-				disable_virt()
-				autogen_flag = false
-				enable_virt()
-			end
-		})
-
-	end
+  -- Trigger initial render
+  manager:update(buf)
 end
 
-function disable_virt()
+-- Disable virtual text rendering for current buffer
+function M.disable_virt()
   local buf = vim.api.nvim_get_current_buf()
-  virt_enabled[buf] = false
-
-  if mult_virt_ns[buf] then
-    vim.api.nvim_buf_clear_namespace(buf, mult_virt_ns[buf], 0, -1)
-    mult_virt_ns[buf] = nil
-  end
   local win = vim.api.nvim_get_current_win()
+
+  if manager then
+    manager:detach(buf)
+  end
+
+  -- Restore conceal settings
   if saved_conceallevel[win] then
     vim.wo[win].conceallevel = saved_conceallevel[win]
   end
   if saved_concealcursor[win] then
     vim.wo[win].concealcursor = saved_concealcursor[win]
   end
-
-	local win = vim.api.nvim_get_current_win()
-	if saved_wrapsettings[win] then
-	  vim.wo[win].wrap = saved_wrapsettings[win]
-	end
-
-	if not autogen_flag and autogen_autocmd[buf] then
-		vim.api.nvim_del_autocmd(autogen_autocmd[buf])
-		autogen_autocmd[buf] = nil
-	end
 end
 
-function toggle_virt(opts)
+-- Toggle virtual text rendering
+function M.toggle_virt(opts)
   local buf = vim.api.nvim_get_current_buf()
-  if virt_enabled[buf] then
-    disable_virt()
+  if manager and manager:is_attached(buf) then
+    M.disable_virt()
   else
-    enable_virt(opts)
+    M.enable_virt(opts)
   end
 end
 
-function is_virt_enabled(buf)
+-- Check if virtual text is enabled
+function M.is_virt_enabled(buf)
   buf = buf or vim.api.nvim_get_current_buf()
-  return virt_enabled[buf] == true
+  return manager and manager:is_attached(buf)
 end
 
+-- Legacy colorize function for popup (kept for compatibility)
+local function colorize(g, first_dx, dx, dy, ns_id_local, drawing, px, py, buf)
+  if g.t == "num" then
+    local off = dy == 0 and first_dx or dx
+    local sx = vim.str_byteindex(drawing[dy + 1], off)
+    local se = vim.str_byteindex(drawing[dy + 1], off + g.w)
+    local of = dy == 0 and px or 0
+    vim.api.nvim_buf_add_highlight(buf, ns_id_local, "@number", py + dy, of + sx, of + se)
+  end
 
+  if g.t == "sym" then
+    local off = dy == 0 and first_dx or dx
+    local sx = vim.str_byteindex(drawing[dy + 1], off)
+    local se = vim.str_byteindex(drawing[dy + 1], off + g.w)
 
-return {
-	gen_drawing = gen_drawing,
-	popup= popup,
-	enable_virt = enable_virt,
+    if g.content and g.content[1] and string.match(g.content[1], "^%a") then
+      local of = dy == 0 and px or 0
+      vim.api.nvim_buf_add_highlight(buf, ns_id_local, "@string", dy + py, of + sx, of + se)
+    elseif g.content and g.content[1] and string.match(g.content[1], "^%d") then
+      local of = dy == 0 and px or 0
+      vim.api.nvim_buf_add_highlight(buf, ns_id_local, "@number", dy + py, of + sx, of + se)
+    else
+      for y = 1, g.h do
+        local off2 = (y + dy == 1) and first_dx or dx
+        local sx2 = vim.str_byteindex(drawing[dy + y], off2)
+        local se2 = vim.str_byteindex(drawing[dy + y], off2 + g.w)
+        local of = (y + dy == 1) and px or 0
+        vim.api.nvim_buf_add_highlight(buf, ns_id_local, "@operator", dy + py + y - 1, of + sx2, of + se2)
+      end
+    end
+  end
 
+  if g.t == "op" or g.t == "par" then
+    for y = 1, g.h do
+      local off = (y + dy == 1) and first_dx or dx
+      local sx = vim.str_byteindex(drawing[dy + y], off)
+      local se = vim.str_byteindex(drawing[dy + y], off + g.w)
+      local of = (dy + y == 1) and px or 0
+      vim.api.nvim_buf_add_highlight(buf, ns_id_local, "@operator", dy + py + y - 1, of + sx, of + se)
+    end
+  end
 
-	disable_virt = disable_virt,
+  if g.t == "var" then
+    local off = dy == 0 and first_dx or dx
+    local sx = vim.str_byteindex(drawing[dy + 1], off)
+    local se = vim.str_byteindex(drawing[dy + 1], off + g.w)
+    local of = dy == 0 and px or 0
+    vim.api.nvim_buf_add_highlight(buf, ns_id_local, "@string", dy + py, of + sx, of + se)
+  end
 
-	toggle_virt = toggle_virt,
+  for _, child in ipairs(g.children or {}) do
+    colorize(child[1], child[2] + first_dx, child[2] + dx, child[3] + dy, ns_id_local, drawing, px, py, buf)
+  end
+end
 
-	is_virt_enabled = is_virt_enabled,
+-- Generate ASCII drawing from LaTeX lines
+local function gen_drawing(lines)
+  local text = table.concat(lines, " ")
+  local drawing, _ = parse_formula(text)
+  return drawing or 0
+end
 
-}
+-- Show popup preview for formula at cursor
+local function popup(overrides)
+  if not utils.in_mathzone() then
+    return
+  end
+
+  local math_node = utils.in_mathzone()
+  local srow, scol, erow, ecol = ts_utils.get_node_range(math_node)
+
+  local lines = vim.api.nvim_buf_get_text(0, srow, scol, erow, ecol, {})
+  local text = table.concat(lines, " ")
+  local drawing, g = parse_formula(text)
+
+  if not drawing or not g then
+    return
+  end
+
+  local floating_default_options = {
+    wrap = false,
+    focusable = false,
+    border = 'single',
+    stylize_markdown = false
+  }
+
+  local bufnr_float = vim.lsp.util.open_floating_preview(
+    drawing,
+    'markdown',
+    vim.tbl_deep_extend('force', floating_default_options, overrides or {})
+  )
+
+  local popup_ns = vim.api.nvim_create_namespace("")
+  colorize(g, 0, 0, 0, popup_ns, drawing, 0, 0, bufnr_float)
+end
+
+-- Export module
+M.gen_drawing = gen_drawing
+M.popup = popup
+
+return M
 
