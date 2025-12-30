@@ -99,7 +99,8 @@ end
 
 -- Parse a single formula and generate ASCII representation
 local function parse_formula(text)
-  local line = text:gsub("%$", "")
+  -- Remove $ delimiters (but not \$), then convert \$ to $ for the parser
+  local line = text:gsub("([^\\])%$", "%1"):gsub("^%$", ""):gsub("\\%$", "$")
   line = line:gsub("\\%[", "")
   line = line:gsub("\\%]", "")
   line = line:gsub("^\\%(", "")

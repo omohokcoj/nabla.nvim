@@ -107,6 +107,14 @@ function parse()
 		      sym = "}", 
 		    }
 
+		  elseif getc() == "$" then
+		    nextc()
+		    sym = {
+		      kind = "symexp", 
+		      lnum = lnum,
+		      sym = "$", 
+		    }
+
 		  elseif getc() == "," then
 		  	sym = {
 		  		kind = "symexp",
@@ -175,6 +183,9 @@ function parse()
 		      lnum = lnum,
 		  		sym = " ",
 		  	}
+
+		  elseif sym.sym == "$" then
+		  	exp = sym
 
 		  elseif sym.sym == "left" and string.match(getc(), '%(') then
 		    nextc()
