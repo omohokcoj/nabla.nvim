@@ -1572,7 +1572,7 @@ function to_ascii(explist, exp_i)
 
     elseif exp.kind == "symexp" then
     	local sym =  exp.sym
-    	if not string.match(sym, "^%a") and not string.match(sym, "^%d")  and not string.match(sym, "^%s+$") and sym ~= "/" and sym ~= special_syms["partial"] and sym ~= "[" and sym ~= "]" and sym ~= "'" and sym ~= "|" and sym ~= "." and sym ~= "," and not (exp_i == 1 and sym == "-") and sym ~= special_syms["Vert"] and sym ~= "$" then
+    	if not string.match(sym, "^%a") and not string.match(sym, "^%d")  and not string.match(sym, "^%s+$") and sym ~= "/" and sym ~= special_syms["partial"] and sym ~= "[" and sym ~= "]" and sym ~= "'" and sym ~= "|" and sym ~= "." and sym ~= "," and not (exp_i == 1 and sym == "-") and sym ~= special_syms["Vert"] and sym ~= "$" and sym ~= "#" then
     		sym = " " .. sym .. " "
     	end
 

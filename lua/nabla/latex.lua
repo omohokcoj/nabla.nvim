@@ -123,6 +123,14 @@ function parse()
 		  	}
 		  	nextc()
 
+		  elseif getc() == "#" then
+		  	sym = {
+		  		kind = "symexp",
+		      lnum = lnum,
+		  		sym = "#",
+		  	}
+		  	nextc()
+
 			elseif getc() == "|" then
 				sym = {
 					kind = "funexp",
@@ -160,6 +168,13 @@ function parse()
 		  		kind = "symexp",
 		      lnum = lnum,
 		  		sym = "        ",
+		  	}
+
+		  elseif sym.sym == "#" then
+		  	exp = {
+		  		kind = "symexp",
+		      lnum = lnum,
+		  		sym = "#",
 		  	}
 
 		  elseif sym.sym == "choose" then
