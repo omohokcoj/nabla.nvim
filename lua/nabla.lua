@@ -99,6 +99,13 @@ end
 
 -- Parse a single formula and generate ASCII representation
 local function parse_formula(text)
+  -- Check for unbalanced $ delimiters
+  local clean = text:gsub("\\\\", ""):gsub("\\%$", "")
+  local _, count = clean:gsub("%$", "")
+  if count % 2 ~= 0 then
+    return nil, nil
+  end
+
   -- Remove $ delimiters (but not \$), then convert \$ to $ for the parser
   local line = text:gsub("([^\\])%$", "%1"):gsub("^%$", ""):gsub("%$$", ""):gsub("\\%$", "$")
   line = line:gsub("\\%[", "")
@@ -175,6 +182,17 @@ local function render_formulas(buf, top, bottom, ctx)
     end
 
     local text = table.concat(texts, " ")
+
+    -- User request: $...$ must be single line. $$...$$ can be multi-line.
+    if srow ~= erow then
+      local trimmed = vim.trim(text)
+      -- If it starts with $ but not $$, it's inline math.
+      -- We check if it starts with $ and the next char is NOT $.
+      if trimmed:match("^%$[^$]") then
+        goto continue
+      end
+    end
+
     local drawing, g = parse_formula(text)
     if not drawing or not g then
       goto continue
