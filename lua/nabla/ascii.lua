@@ -1001,6 +1001,7 @@ local sup_letters = {
 	["0"] = "⁰", ["1"] = "¹", ["2"] = "²", ["3"] = "³", ["4"] = "⁴", ["5"] = "⁵", ["6"] = "⁶", ["7"] = "⁷", ["8"] = "⁸", ["9"] = "⁹",
 	["i"] = "ⁱ", ["j"] = "ʲ", ["w"] = "ʷ",
   ["T"] = "ᵀ", ["A"] = "ᴬ", ["B"] = "ᴮ", ["D"] = "ᴰ", ["E"] = "ᴱ", ["G"] = "ᴳ", ["H"] = "ᴴ", ["I"] = "ᴵ", ["J"] = "ᴶ", ["K"] = "ᴷ", ["L"] = "ᴸ", ["M"] = "ᴹ", ["N"] = "ᴺ", ["O"] = "ᴼ", ["P"] = "ᴾ", ["R"] = "ᴿ", ["U"] = "ᵁ", ["V"] = "ⱽ", ["W"] = "ᵂ",
+  ["∘"] = "°",
 }
 
 local mathbb = {
@@ -1491,6 +1492,15 @@ function put_if_only_sup(g, sub, sup)
   		elseif exp.kind == "symexp" then
   			if sup_letters[exp.sym] and not exp.sub and not exp.sup then
   				superscript = superscript .. sup_letters[exp.sym]
+  			else
+  				superscript = nil
+  				break
+  			end
+
+  		elseif exp.kind == "funexp" then
+  			local sym_char = special_syms[exp.sym] or special_nums[exp.sym] or greek_etc[exp.sym]
+  			if sym_char and sup_letters[sym_char] and not exp.sub and not exp.sup then
+  				superscript = superscript .. sup_letters[sym_char]
   			else
   				superscript = nil
   				break
