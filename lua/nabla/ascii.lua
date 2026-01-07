@@ -60,6 +60,14 @@ local style = {
 	root_upper = "─",
 	root_upper_right = "┐",
 
+	box_upper_left = "┌",
+	box_upper = "─",
+	box_upper_right = "┐",
+	box_vert = "│",
+	box_lower_left = "└",
+	box_lower = "─",
+	box_lower_right = "┘",
+
 	matrix_upper_left = "⎡", 
 	matrix_upper_right = "⎤", 
 	matrix_vert_left = "⎢",
@@ -1770,6 +1778,45 @@ function to_ascii(explist, exp_i)
     	  local  c1 = left_bar:join_hori(ingrid, true)
     	  local  c2 = c1:join_hori(right_bar, true)
     		g = c2
+
+
+    	elseif name == "boxed" then
+    	  local ingrid = to_ascii({explist[exp_i+1]}, 1)
+    	  exp_i = exp_i + 1
+
+    	  local left_bars = {}
+    	  local right_bars = {}
+
+    	  for y=1, ingrid.h do
+    	    table.insert(left_bars, style.box_vert)
+    	    table.insert(right_bars, style.box_vert)
+    	  end
+
+    	  local left_border = grid:new(1, ingrid.h, left_bars)
+    	  local right_border = grid:new(1, ingrid.h, right_bars)
+
+    	  local center = left_border:join_hori(ingrid, true)
+    	  center = center:join_hori(right_border, true)
+
+          local w = center.w
+          local top_str = style.box_upper_left
+          local bot_str = style.box_lower_left
+          
+          for x=1, w-2 do
+            top_str = top_str .. style.box_upper
+            bot_str = bot_str .. style.box_lower
+          end
+          top_str = top_str .. style.box_upper_right
+          bot_str = bot_str .. style.box_lower_right
+          
+          local top_border = grid:new(w, 1, { top_str })
+          local bot_border = grid:new(w, 1, { bot_str })
+          
+          local res = top_border:join_vert(center)
+          res = res:join_vert(bot_border)
+          
+          res.my = top_border.h + ingrid.my
+          g = res
 
 
     	elseif name == "dddot" then
