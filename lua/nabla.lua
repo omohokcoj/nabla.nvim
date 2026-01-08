@@ -183,6 +183,81 @@ local function render_formulas(buf, top, bottom, ctx)
 
     local text = table.concat(texts, " ")
 
+    -- Heuristic: Ignore currency-like usage (e.g. "$10 to $20")
+    -- If it starts with a single $ (not $$), check for common currency patterns
+    if text:match("^%$[^$]") then
+      local skip = false
+      -- 1. Opening $ followed by space (e.g. "$ 10")
+      if text:match("^%$%s") then
+        skip = true
+      end
+      
+      -- 2. Closing $ followed by digit (e.g. "...$20")
+      -- Get character immediately following the node
+      if not skip then
+        local line = vim.api.nvim_buf_get_lines(buf, erow, erow + 1, true)[1] or ""
+        local char_after = line:sub(ecol + 1, ecol + 1)
+        if char_after:match("%d") then
+          skip = true
+        end
+      end
+
+      if skip then
+        -- Attempt to recover markdown formatting (bold/italic) inside this "false positive" math block
+        -- This handles cases like "**$60**" where math node swallows the markdown markers
+        
+        -- Simple pattern matching for **bold** and *italic*
+        -- We only handle single-line within the range for now to be safe
+        if srow == erow then
+          local full_line = vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or ""
+          -- Look for **...** where the start or end is inside the math node
+          -- Since we can't easily parse markdown here, we just apply standard highlighting
+          -- to any **...** or *...* found in the text, assuming they are markdown.
+          -- We only care about things that overlap our range.
+          
+          -- Find all **...** matches in the line
+          -- pattern: literal **, content, literal **
+          -- gmatch returns captures. We need positions.
+          -- Lua gmatch doesn't return positions easily unless we use () captures.
+          -- () returns the current position.
+          for s, content, e in full_line:gmatch("()%*%*(.-)%*%*()") do
+             -- s is start position, e is end position (after last char)
+             local ms = s - 1
+             local me = e - 1
+             
+             -- Check overlap with the skipped math node
+             if me > scol and ms < ecol then
+               -- Create conceal extmarks for the ** markers
+               -- First **
+               table.insert(marks, Extmark.new(srow, ms, {
+                 end_row = srow,
+                 end_col = ms + 2,
+                 conceal = "",
+                 hl_group = "NonText", -- Hide them
+               }, true))
+               
+               -- Content (apply Bold)
+               table.insert(marks, Extmark.new(srow, ms + 2, {
+                 end_row = srow,
+                 end_col = me - 2,
+                 hl_group = "GuiBold", -- Or @text.strong
+                 priority = 1000, -- High priority to override math
+               }, true))
+               
+               -- Closing **
+               table.insert(marks, Extmark.new(srow, me - 2, {
+                 end_row = srow,
+                 end_col = me,
+                 conceal = "",
+                 hl_group = "NonText",
+               }, true))
+             end
+          end
+        end
+        goto continue
+      end
+    end
+
     -- User request: $...$ must be single line. $$...$$ can be multi-line.
     if srow ~= erow then
       local trimmed = vim.trim(text)
@@ -217,14 +292,15 @@ local function render_formulas(buf, top, bottom, ctx)
     -- Find the longest line for conceal placement
     local concealline = srow
     local longest = -1
-    for r = 1, erow - srow + 1 do
+    local num_source_lines = erow - srow + 1
+    for r = 1, num_source_lines do
       local p1, p2
       if srow == erow then
         p1, p2 = scol, ecol
       elseif r == 1 then
         p1 = scol
         p2 = #(vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or "")
-      elseif r == #drawing_virt then
+      elseif r == num_source_lines then
         p1, p2 = 0, ecol
       else
         p1 = 0
@@ -246,21 +322,22 @@ local function render_formulas(buf, top, bottom, ctx)
       -- relrow: negative = above inline, 0 = inline, positive = below inline
       local relrow = r - g.my - 1
 
-      local p1, p2
-      if srow == erow then
-        p1, p2 = scol, ecol
-      elseif r == 1 then
-        p1 = scol
-        p2 = #(vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or "")
-      elseif r == #drawing_virt then
-        p1, p2 = 0, ecol
-      else
-        p1 = 0
-        p2 = #(vim.api.nvim_buf_get_lines(buf, srow + (r - 1), srow + r, true)[1] or "")
-      end
-
       if relrow == 0 then
         -- Inline replacement
+        local p1, p2
+        if srow == erow then
+          p1, p2 = scol, ecol
+        elseif concealline == srow then
+          p1 = scol
+          p2 = #(vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or "")
+        elseif concealline == erow then
+          p1 = 0
+          p2 = ecol
+        else
+          p1 = 0
+          p2 = #(vim.api.nvim_buf_get_lines(buf, concealline, concealline + 1, true)[1] or "")
+        end
+
         local chunks = {}
         local margin_left = 0
         local margin_right = p2 - #virt_line - p1
@@ -347,7 +424,7 @@ local function render_formulas(buf, top, bottom, ctx)
     end
 
     -- Conceal other lines of multi-line formulas
-    for r = 1, erow - srow + 1 do
+    for r = 1, num_source_lines do
       local row = srow + (r - 1)
       if row ~= concealline then
         local p1, p2
@@ -356,7 +433,7 @@ local function render_formulas(buf, top, bottom, ctx)
         elseif r == 1 then
           p1 = scol
           p2 = #(vim.api.nvim_buf_get_lines(buf, srow, srow + 1, true)[1] or "")
-        elseif r == #drawing_virt then
+        elseif r == num_source_lines then
           p1, p2 = 0, ecol
         else
           p1 = 0
