@@ -1759,6 +1759,23 @@ function to_ascii(explist, exp_i)
     		  g = g:join_hori(col_spacer)
     		end
 
+    	elseif name == "max" then
+    	  g = grid:new(3, 1, { "max" }, "op")
+
+    	  g, exp_i = stack_subsup(explist, exp_i, g)
+    		local col_spacer = grid:new(1, 1, { " " })
+    		if g then
+    		  g = g:join_hori(col_spacer)
+    		end
+
+    	elseif name == "min" then
+    	  g = grid:new(3, 1, { "min" }, "op")
+
+    	  g, exp_i = stack_subsup(explist, exp_i, g)
+    		local col_spacer = grid:new(1, 1, { " " })
+    		if g then
+    		  g = g:join_hori(col_spacer)
+    		end
 
 
     	elseif name == "bar" then

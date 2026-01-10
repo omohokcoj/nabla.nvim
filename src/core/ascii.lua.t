@@ -759,6 +759,18 @@ elseif name == "lim" then
   g, exp_i = stack_subsup(explist, exp_i, g)
 	@put_col_spacer_to_g
 
+elseif name == "max" then
+  g = grid:new(3, 1, { "max" }, "op")
+
+  g, exp_i = stack_subsup(explist, exp_i, g)
+	@put_col_spacer_to_g
+
+elseif name == "min" then
+  g = grid:new(3, 1, { "min" }, "op")
+
+  g, exp_i = stack_subsup(explist, exp_i, g)
+	@put_col_spacer_to_g
+
 
 @special_symbols+=
 ["partial"] = "∂",
