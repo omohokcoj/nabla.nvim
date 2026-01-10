@@ -283,7 +283,24 @@ local function render_formulas(buf, top, bottom, ctx)
     
     -- Calculate visual column accounting for previous formulas on this row
     local prev_offset = row_offsets[srow] or 0
-    local visual_col = scol - prev_offset
+    
+    -- Calculate concealed characters before this formula position
+    -- Markdown syntax like **bold** conceals the ** markers
+    local line_before = vim.api.nvim_buf_get_text(buf, srow, 0, srow, scol, {})[1] or ""
+    local conceal_offset = 0
+    -- Count ** pairs (bold)
+    for _ in line_before:gmatch("%*%*") do
+      conceal_offset = conceal_offset + 2
+    end
+    -- Count remaining single * (italic) - but only unmatched ones
+    local single_stars = select(2, line_before:gsub("%*", "")) - (conceal_offset)
+    conceal_offset = conceal_offset + single_stars
+    -- Count __ pairs (bold alt)
+    for _ in line_before:gmatch("__") do
+      conceal_offset = conceal_offset + 2
+    end
+    
+    local visual_col = scol - prev_offset - conceal_offset
     
     -- Update offset for next formula on this row
     -- Offset increases by (source_width - rendered_width)
