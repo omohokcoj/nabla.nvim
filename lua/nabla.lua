@@ -284,9 +284,14 @@ local function render_formulas(buf, top, bottom, ctx)
     -- Calculate visual column accounting for previous formulas on this row
     local prev_offset = row_offsets[srow] or 0
     
+    -- Get text before formula and calculate its display width
+    -- This correctly handles UTF-8 characters (e.g., Cyrillic) which may be
+    -- multi-byte but single display width
+    local line_before = vim.api.nvim_buf_get_text(buf, srow, 0, srow, scol, {})[1] or ""
+    local display_width_before = vim.fn.strdisplaywidth(line_before)
+    
     -- Calculate concealed characters before this formula position
     -- Markdown syntax like **bold** conceals the ** markers
-    local line_before = vim.api.nvim_buf_get_text(buf, srow, 0, srow, scol, {})[1] or ""
     local conceal_offset = 0
     -- Count ** pairs (bold)
     for _ in line_before:gmatch("%*%*") do
@@ -300,7 +305,7 @@ local function render_formulas(buf, top, bottom, ctx)
       conceal_offset = conceal_offset + 2
     end
     
-    local visual_col = scol - prev_offset - conceal_offset
+    local visual_col = display_width_before - prev_offset - conceal_offset
     
     -- Update offset for next formula on this row
     -- Offset increases by (source_width - rendered_width)
@@ -355,36 +360,42 @@ local function render_formulas(buf, top, bottom, ctx)
           p2 = #(vim.api.nvim_buf_get_lines(buf, concealline, concealline + 1, true)[1] or "")
         end
 
-        local chunks = {}
-        local margin_left = 0
-        local margin_right = p2 - #virt_line - p1
-
-        for _ = 1, margin_left do
-          table.insert(chunks, { " ", "NonText" })
-        end
-        vim.list_extend(chunks, virt_line)
-        for _ = 1, math.max(0, margin_right) do
-          table.insert(chunks, { "", "NonText" })
-        end
-
-        -- Create conceal extmarks for each character
-        for j, chunk in ipairs(chunks) do
-          local c, hl_group = unpack(chunk)
-          if p1 + j <= p2 then
-            local mark = Extmark.new(concealline, p1 + j - 1, {
+        -- Create conceal extmarks to replace source with rendered text
+        -- Strategy: distribute source bytes among rendered characters
+        -- Each rendered char conceals roughly (source_bytes / rendered_chars) source bytes
+        local source_bytes = p2 - p1
+        local rendered_chars = #virt_line
+        
+        if rendered_chars == 0 then
+          -- Edge case: empty render, conceal everything
+          local mark = Extmark.new(concealline, p1, {
+            end_row = concealline,
+            end_col = p2,
+            conceal = "",
+            strict = false,
+          }, true)
+          marks[#marks + 1] = mark
+        elseif source_bytes <= rendered_chars then
+          -- Source is shorter than or equal to rendered - each source byte gets one char
+          -- Extra rendered chars go to overflow
+          for i = 0, source_bytes - 1 do
+            local c, hl_group = unpack(virt_line[i + 1])
+            local mark = Extmark.new(concealline, p1 + i, {
               end_row = concealline,
-              end_col = p1 + j,
+              end_col = p1 + i + 1,
               conceal = c,
               hl_group = hl_group,
               strict = false,
-            }, true) -- conceal = true for anti-conceal
+            }, true)
             marks[#marks + 1] = mark
-          elseif c ~= "" then
-            -- Overflow - add as inline virtual text
+          end
+          -- Overflow
+          if rendered_chars > source_bytes then
             local overflow = {}
-            for k = j, #chunks do
-              if chunks[k][1] ~= "" then
-                table.insert(overflow, chunks[k])
+            for k = source_bytes + 1, rendered_chars do
+              local c, hl = unpack(virt_line[k])
+              if c ~= "" then
+                table.insert(overflow, { c, hl })
               end
             end
             if #overflow > 0 then
@@ -394,7 +405,39 @@ local function render_formulas(buf, top, bottom, ctx)
               }, true)
               marks[#marks + 1] = mark
             end
-            break
+          end
+        else
+          -- Source is longer than rendered - distribute source chars among rendered chars
+          -- IMPORTANT: Must respect UTF-8 boundaries in source text
+          local source_line = vim.api.nvim_buf_get_lines(buf, concealline, concealline + 1, true)[1] or ""
+          local source_text = source_line:sub(p1 + 1, p2)
+          local source_char_count = vim.str_utfindex(source_text)
+          
+          -- Distribute source chars among rendered chars
+          local chars_per_render = math.floor(source_char_count / rendered_chars)
+          local extra_chars = source_char_count - (chars_per_render * rendered_chars)
+          
+          local src_char_idx = 0
+          for i = 1, rendered_chars do
+            local c, hl_group = unpack(virt_line[i])
+            local num_src_chars = chars_per_render
+            if i <= extra_chars then
+              num_src_chars = num_src_chars + 1
+            end
+            
+            -- Get byte range for these source characters
+            local byte_start = vim.str_byteindex(source_text, src_char_idx)
+            local byte_end = vim.str_byteindex(source_text, src_char_idx + num_src_chars)
+            
+            local mark = Extmark.new(concealline, p1 + byte_start, {
+              end_row = concealline,
+              end_col = p1 + byte_end,
+              conceal = c,
+              hl_group = hl_group,
+              strict = false,
+            }, true)
+            marks[#marks + 1] = mark
+            src_char_idx = src_char_idx + num_src_chars
           end
         end
       elseif relrow < 0 then

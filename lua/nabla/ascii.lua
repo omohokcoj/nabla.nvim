@@ -1590,7 +1590,14 @@ function to_ascii(explist, exp_i)
 
     elseif exp.kind == "symexp" then
     	local sym =  exp.sym
-    	if not string.match(sym, "^%a") and not string.match(sym, "^%d")  and not string.match(sym, "^%s+$") and sym ~= "/" and sym ~= special_syms["partial"] and sym ~= "[" and sym ~= "]" and sym ~= "'" and sym ~= "|" and sym ~= "." and sym ~= "," and not (exp_i == 1 and sym == "-") and sym ~= special_syms["Vert"] and sym ~= "$" and sym ~= "#" then
+    	-- Check if first character is a word character (letter/digit in any script) using vim.fn.charclass
+    	-- charclass: 0=whitespace, 1=punctuation, 2=word char
+    	local first_char = vim.fn.strcharpart(sym, 0, 1)
+    	local is_word_char = vim.fn.charclass(first_char) == 2
+    	local is_space_only = string.match(sym, "^%s+$")
+    	local is_excluded = sym == "/" or sym == special_syms["partial"] or sym == "[" or sym == "]" or sym == "'" or sym == "|" or sym == "." or sym == "," or sym == special_syms["Vert"] or sym == "$" or sym == "#"
+    	local is_leading_minus = (exp_i == 1 and sym == "-")
+    	if not is_word_char and not is_space_only and not is_excluded and not is_leading_minus then
     		sym = " " .. sym .. " "
     	end
 
@@ -1628,7 +1635,13 @@ function to_ascii(explist, exp_i)
     	  local t
     	  if special_syms[name] then
     	    t = "sym"
-    	  	if not string.match(sym, "^%a") and not string.match(sym, "^%d")  and not string.match(sym, "^%s+$") and sym ~= "/" and sym ~= special_syms["partial"] and sym ~= "[" and sym ~= "]" and sym ~= "'" and sym ~= "|" and sym ~= "." and sym ~= "," and not (exp_i == 1 and sym == "-") and sym ~= special_syms["Vert"] then
+    	  	-- Check if first character is a word character (letter/digit in any script)
+    	  	local first_char = vim.fn.strcharpart(sym, 0, 1)
+    	  	local is_word_char = vim.fn.charclass(first_char) == 2
+    	  	local is_space_only = string.match(sym, "^%s+$")
+    	  	local is_excluded = sym == "/" or sym == special_syms["partial"] or sym == "[" or sym == "]" or sym == "'" or sym == "|" or sym == "." or sym == "," or sym == special_syms["Vert"]
+    	  	local is_leading_minus = (exp_i == 1 and sym == "-")
+    	  	if not is_word_char and not is_space_only and not is_excluded and not is_leading_minus then
     	  		sym = " " .. sym .. " "
     	  	end
 
