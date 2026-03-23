@@ -1585,20 +1585,22 @@ function to_ascii(explist, exp_i)
     local exp = explist[exp_i]
     local g
     if exp.kind == "numexp" then
-    	local numstr = tostring(exp.num)
-    	g = grid:new(string.len(numstr), 1, { tostring(numstr) }, "num")
+    	local numstr = exp.str or tostring(exp.num)
+    	g = grid:new(string.len(numstr), 1, { numstr }, "num")
 
     elseif exp.kind == "symexp" then
     	local sym =  exp.sym
-    	-- Check if first character is a word character (letter/digit in any script) using vim.fn.charclass
-    	-- charclass: 0=whitespace, 1=punctuation, 2=word char
-    	local first_char = vim.fn.strcharpart(sym, 0, 1)
-    	local is_word_char = vim.fn.charclass(first_char) == 2
-    	local is_space_only = string.match(sym, "^%s+$")
-    	local is_excluded = sym == "/" or sym == special_syms["partial"] or sym == "[" or sym == "]" or sym == "'" or sym == "|" or sym == "." or sym == "," or sym == special_syms["Vert"] or sym == "$" or sym == "#"
-    	local is_leading_minus = (exp_i == 1 and sym == "-")
-    	if not is_word_char and not is_space_only and not is_excluded and not is_leading_minus then
-    		sym = " " .. sym .. " "
+    	if not exp.is_text then
+    		-- Check if first character is a word character (letter/digit in any script) using vim.fn.charclass
+    		-- charclass: 0=whitespace, 1=punctuation, 2=word char
+    		local first_char = vim.fn.strcharpart(sym, 0, 1)
+    		local is_word_char = vim.fn.charclass(first_char) == 2
+    		local is_space_only = string.match(sym, "^%s+$")
+    		local is_excluded = sym == "/" or sym == special_syms["partial"] or sym == "[" or sym == "]" or sym == "'" or sym == "|" or sym == "." or sym == "," or sym == special_syms["Vert"] or sym == "$" or sym == "#"
+    		local is_leading_minus = (exp_i == 1 and sym == "-")
+    		if not is_word_char and not is_space_only and not is_excluded and not is_leading_minus then
+    			sym = " " .. sym .. " "
+    		end
     	end
 
     	g = grid:new(utf8len(sym), 1, { sym }, "sym")
@@ -1635,13 +1637,10 @@ function to_ascii(explist, exp_i)
     	  local t
     	  if special_syms[name] then
     	    t = "sym"
-    	  	-- Check if first character is a word character (letter/digit in any script)
-    	  	local first_char = vim.fn.strcharpart(sym, 0, 1)
-    	  	local is_word_char = vim.fn.charclass(first_char) == 2
     	  	local is_space_only = string.match(sym, "^%s+$")
     	  	local is_excluded = sym == "/" or sym == special_syms["partial"] or sym == "[" or sym == "]" or sym == "'" or sym == "|" or sym == "." or sym == "," or sym == special_syms["Vert"]
     	  	local is_leading_minus = (exp_i == 1 and sym == "-")
-    	  	if not is_word_char and not is_space_only and not is_excluded and not is_leading_minus then
+    	  	if not is_space_only and not is_excluded and not is_leading_minus then
     	  		sym = " " .. sym .. " "
     	  	end
 

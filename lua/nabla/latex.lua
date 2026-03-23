@@ -131,6 +131,14 @@ function parse()
 		  	}
 		  	nextc()
 
+		  elseif getc() == "%" then
+		  	sym = {
+		  		kind = "symexp",
+		      lnum = lnum,
+		  		sym = "%",
+		  	}
+		  	nextc()
+
 			elseif getc() == "|" then
 				sym = {
 					kind = "funexp",
@@ -154,6 +162,7 @@ function parse()
 		      kind = "symexp",
 		      lnum = lnum,
 		      sym  = txt,
+		      is_text = true,
 		    }
 
 
@@ -175,6 +184,13 @@ function parse()
 		  		kind = "symexp",
 		      lnum = lnum,
 		  		sym = "#",
+		  	}
+
+		  elseif sym.sym == "%" then
+		  	exp = {
+		  		kind = "symexp",
+		      lnum = lnum,
+		  		sym = "%",
 		  	}
 
 		  elseif sym.sym == "choose" then
@@ -341,6 +357,7 @@ function parse_number()
 	local exp = {
 		kind = "numexp",
 		num = tonumber(num_str),
+		str = num_str,
 	  lnum = lnum,
 	}
 
