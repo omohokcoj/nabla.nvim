@@ -65,6 +65,14 @@ function M.win.valid(win)
   return vim.api.nvim_win_is_valid(win)
 end
 
+---Check if window is valid and currently displays buffer
+---@param win number|nil
+---@param buf number
+---@return boolean
+function M.win.shows(win, buf)
+  return win ~= nil and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf
+end
+
 ---Get current window
 ---@return number
 function M.win.current()
@@ -86,7 +94,7 @@ end
 ---@param win number
 ---@return number|nil 0-indexed row
 function M.row.get(buf, win)
-  if vim.api.nvim_win_get_buf(win) ~= buf then
+  if not M.win.shows(win, buf) then
     return nil
   end
   return vim.api.nvim_win_get_cursor(win)[1] - 1

@@ -112,21 +112,45 @@ function Updater:display()
   self.decorator:display(hidden)
 end
 
+---Find a window displaying this buffer, preferring the current one
+---@return number|nil
+function Updater:resolve_win()
+  local current = env.win.current()
+  if env.win.shows(current, self.buf) then
+    return current
+  end
+  if env.win.shows(self.win, self.buf) then
+    return self.win
+  end
+  return env.buf.wins(self.buf)[1]
+end
+
 ---Schedule update with debouncing
 ---@param force boolean|nil
 function Updater:schedule(force)
   self.force = force or false
-  self.win = env.win.current()
-  
+  self.win = self:resolve_win()
+  if not self.win then
+    return -- buffer not displayed anywhere, nothing to render
+  end
+
   -- Only debounce when content has changed (buffer modified or new viewport)
   -- If viewport is already rendered, no debounce needed (instant display update)
   local needs_reparse = self:changed()
-  
+
   self.decorator:schedule(
     needs_reparse,
     self.config.debounce,
     function()
-      if env.buf.valid(self.buf) then
+      if not env.buf.valid(self.buf) then
+        return
+      end
+      -- The window captured at schedule time may have been closed (e.g. a
+      -- floating/preview window) before this debounced callback ran.
+      if not env.win.shows(self.win, self.buf) then
+        self.win = self:resolve_win()
+      end
+      if self.win then
         self:render()
       end
     end
